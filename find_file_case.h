@@ -115,6 +115,7 @@ extern char *find_file_case(const char *path, char *buffer, size_t buflen, int f
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 
 char *find_file_case(const char *path, char *buffer, size_t buflen, int flags, struct match_fptrs *fptrs)
