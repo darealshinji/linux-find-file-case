@@ -14,7 +14,8 @@ int main()
         return 1;
     }
 
-    std::cout << input << '\n' << p << std::endl;
+    std::cout << "given input: " << input << std::endl;
+    std::cout << "result: " << p << std::endl;
 
     free(p);
 

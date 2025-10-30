@@ -85,7 +85,7 @@ extern "C" {
  *
  *    FIND_FILE_CASE_NONNULL
  *     Never return NULL. On failure a copy of 'path' is returned instead.
- *     If 'path' is set to NULL an empty string is returned.
+ *     If 'path' is set to NULL a copy of an empty string is returned.
  *
  * fptrs:
  *    Pointer to struct holding pointers to alternative versions of the following
@@ -118,29 +118,159 @@ extern char *find_file_case(const char *path, char *buffer, size_t buflen, int f
 #include <strings.h>
 
 
-char *find_file_case(const char *path, char *buffer, size_t buflen, int flags, struct match_fptrs *fptrs)
+static char *_find_file_case_iterate_path(char *pbuf, size_t buflen, size_t path_len, struct match_fptrs *f)
 {
     DIR *dirp;
     struct dirent *d;
+    char *p, *prev, *last, *token, *end;
+    const char *dir;
+    int errsav;
+
+    /* initial path is either root or current working directory */
+    dir = (*pbuf == '/') ? "/" : ".";
+    prev = last = pbuf;
+
+    /* iterate through path */
+    for (p=pbuf; ; dir=pbuf, last=token, p=NULL) {
+        if ((token = strtok(p, "/")) == NULL) {
+            break;
+        }
+
+        /* search directory */
+
+        if ((dirp = f->opendir(dir)) == NULL) {
+            return NULL;
+        }
+
+        errno = 0;
+
+        while ((d = f->readdir(dirp)) != NULL) {
+            if (f->strcasecmp(d->d_name, token) == 0) {
+                break;
+            }
+        }
+
+        if (!d) {
+            errsav = errno;
+            f->closedir(dirp);
+            errno = errsav;
+
+            return NULL;
+        }
+
+        f->closedir(dirp);
+
+        /* append match */
+
+        for ( ; prev != token; prev++) {
+            if (*prev == 0) {
+                *prev = '/';
+            }
+        }
+
+        *token = 0;
+        strlcat(pbuf, d->d_name, buflen);
+    }
+
+    /* append trailing delimiters */
+
+    end = pbuf + path_len;
+    last += strlen(last);
+
+    if (end > last) {
+        memset(last, '/', end - last);
+        *(end+1) = 0;
+    }
+
+    return pbuf;
+}
+
+
+static void _find_file_case_path_cleanup(char *pbuf, size_t buflen)
+{
+    char *temp, *p, *token;
+
+    temp = (char *)malloc(buflen);
+    temp[0] = 0;
+
+    for (p = pbuf; ; p = NULL) {
+        if ((token = strtok(p, "/")) == NULL) {
+            break;
+        }
+
+        if (strcmp(token, ".") == 0) {
+            continue;
+        }
+
+        if (*temp != 0 || (*temp == 0 && *pbuf == '/')) {
+            strlcat(temp, "/", buflen);
+        }
+
+        strlcat(temp, token, buflen);
+    }
+
+    if (*temp == 0) {
+        if (*pbuf == '/') {
+            strlcpy(pbuf, "/", buflen);
+        } else {
+            strlcpy(pbuf, ".", buflen);
+        }
+    } else {
+        strlcpy(pbuf, temp, buflen);
+    }
+
+    free(temp);
+}
+
+
+static char *_find_file_case_error(const char *path, char *buffer, char *copy, size_t buflen, int flags)
+{
+    free(copy);
+
+    if (errno == 0) {
+        errno = ENOENT;
+    }
+
+    /* return a copy of "path" instead of NULL */
+    if (flags & FIND_FILE_CASE_NONNULL) {
+        if (!path) {
+            path = "";
+        }
+
+        if (buffer) {
+            strlcpy(buffer, path, buflen);
+            return buffer;
+        } else if ((copy = strdup(path)) == NULL) {
+            /* abort() instead of returning NULL */
+            perror("strdup()");
+            abort();
+        }
+
+        return copy;
+    }
+
+    return NULL;
+}
+
+
+char *find_file_case(const char *path, char *buffer, size_t buflen, int flags, struct match_fptrs *fptrs)
+{
     struct stat st;
     struct match_fptrs f;
     size_t path_len;
-    char *p, *prev, *token, *temp, *last, *end;
-    const char *dir;
     char *pbuf = NULL;
     char *copy = NULL;
-    int errsav;
 
     if (!path || *path == 0) {
         errno = EINVAL;
-        goto FIND_FILE_CASE_END;
+        return _find_file_case_error(path, buffer, NULL, buflen, flags);
     }
 
     path_len = strlen(path);
 
     if (buffer && (path_len == 0 || buflen < (path_len+1))) {
         errno = ENOMEM;
-        goto FIND_FILE_CASE_END;
+        return _find_file_case_error(path, buffer, NULL, buflen, flags);
     }
 
     /* set function pointers */
@@ -166,142 +296,28 @@ char *find_file_case(const char *path, char *buffer, size_t buflen, int flags, s
         pbuf = copy = strdup(path);
     }
 
-    if (f.lstat(pbuf, &st) == -1) {
-        /* initial path is either root or current working directory */
-        dir = (*pbuf == '/') ? "/" : ".";
-
-        /* iterate through path */
-        for (p=prev=last=pbuf; ; dir=pbuf, last=token, p=NULL) {
-            if ((token = strtok(p, "/")) == NULL) {
-                break;
-            }
-
-            /* search directory */
-
-            if ((dirp = f.opendir(dir)) == NULL) {
-                pbuf = NULL;
-                goto FIND_FILE_CASE_END;
-            }
-
-            errno = 0;
-
-            while ((d = f.readdir(dirp)) != NULL) {
-                if (f.strcasecmp(d->d_name, token) == 0) {
-                    break;
-                }
-            }
-
-            if (!d) {
-                errsav = errno;
-                f.closedir(dirp);
-                errno = errsav;
-
-                pbuf = NULL;
-                goto FIND_FILE_CASE_END;
-            }
-
-            f.closedir(dirp);
-
-            /* append match */
-
-            for ( ; prev != token; prev++) {
-                if (*prev == 0) {
-                    *prev = '/';
-                }
-            }
-
-            *token = 0;
-            strlcat(pbuf, d->d_name, buflen);
-        }
-
-        /* append trailing delimiters */
-
-        end = pbuf + path_len;
-        last += strlen(last);
-
-        if (end > last) {
-            memset(last, '/', end - last);
-            *(end+1) = 0;
-        }
+    /* if given path does not exist do case insensitive search */
+    if (f.lstat(pbuf, &st) == -1 &&
+        (pbuf = _find_file_case_iterate_path(pbuf, buflen, path_len, &f)) == NULL)
+    {
+        return _find_file_case_error(path, buffer, copy, buflen, flags);
     }
 
     /* treat non-directory with trailing delimiters as an error */
     if (pbuf[path_len-1] == '/') {
         if (f.stat(pbuf, &st) == -1) {
-            pbuf = NULL;
-            goto FIND_FILE_CASE_END;
+            return _find_file_case_error(path, buffer, copy, buflen, flags);
         }
 
         if ((st.st_mode & S_IFMT) != S_IFDIR) {
             errno = ENOTDIR;
-            pbuf = NULL;
-            goto FIND_FILE_CASE_END;
+            return _find_file_case_error(path, buffer, copy, buflen, flags);
         }
     }
 
     /* remove superfluous "." entries and path delimiters */
     if ((flags & FIND_FILE_CASE_CLEANUP) && strchr(pbuf, '/')) {
-        temp = (char *)malloc(buflen);
-        temp[0] = 0;
-
-        for (p = pbuf; ; p = NULL) {
-            if ((token = strtok(p, "/")) == NULL) {
-                break;
-            }
-
-            if (strcmp(token, ".") == 0) {
-                continue;
-            }
-
-            if (*temp != 0 || (*temp == 0 && *pbuf == '/')) {
-                strlcat(temp, "/", buflen);
-            }
-
-            strlcat(temp, token, buflen);
-        }
-
-        if (*temp == 0) {
-            if (*pbuf == '/') {
-                strlcpy(pbuf, "/", buflen);
-            } else {
-                strlcpy(pbuf, ".", buflen);
-            }
-        } else {
-            strlcpy(pbuf, temp, buflen);
-        }
-
-        free(temp);
-    }
-
-FIND_FILE_CASE_END:
-
-    if (pbuf) {
-        return pbuf; /* OK */
-    }
-
-    /* error */
-
-    free(copy);
-
-    if (errno == 0) {
-        errno = ENOENT;
-    }
-
-    if (flags & FIND_FILE_CASE_NONNULL) {
-        /* don't return NULL */
-
-        if (!path) {
-            path = "";
-        }
-
-        if (buffer) {
-            strlcpy(buffer, path, buflen);
-            pbuf = buffer;
-        } else if ((pbuf = strdup(path)) == NULL) {
-            /* abort() instead of returning NULL */
-            perror("strdup()");
-            abort();
-        }
+        _find_file_case_path_cleanup(pbuf, buflen);
     }
 
     return pbuf;
