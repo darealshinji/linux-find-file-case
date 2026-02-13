@@ -15,15 +15,15 @@ static int my_utf8_casecmp(const char *str1, const char *str2)
         return g_ascii_strcasecmp(str1, str2);
     }
 
-    /* convert UTF-8 strings to lowercase and compare
-     * with standard strcmp() function */
-    gchar *lwr1 = g_utf8_strdown(str1, -1);
-    gchar *lwr2 = g_utf8_strdown(str2, -1);
+    /* convert UTF-8 strings to a form that is independent
+     * of case and compare with g_utf8_collate() */
+    gchar *fold1 = g_utf8_casefold(str1, -1);
+    gchar *fold2 = g_utf8_casefold(str2, -1);
 
-    int rv = strcmp(lwr1, lwr2);
+    int rv = g_utf8_collate(fold1, fold2);
 
-    g_free(lwr1);
-    g_free(lwr2);
+    g_free(fold1);
+    g_free(fold2);
 
     return rv;
 }
