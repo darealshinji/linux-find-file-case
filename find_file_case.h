@@ -118,68 +118,126 @@ extern char *find_file_case(const char *path, char *buffer, size_t buflen, int f
 #include <strings.h>
 
 
-static char *_find_file_case_iterate_path(char *pbuf, size_t buflen, size_t path_len, struct match_fptrs *f)
+static inline void *_find_file_case_malloc(size_t len)
 {
+    void *p = malloc(len);
+
+    if (!p) {
+        perror("malloc()");
+        abort();
+    }
+
+    return p;
+}
+
+
+static inline char *_find_file_case_strdup(const char *s)
+{
+    char *p = strdup(s);
+
+    if (!p) {
+        perror("strdup()");
+        abort();
+    }
+
+    return p;
+}
+
+
+static int _find_file_case_path_exists(const char *p1, const char *p2, struct match_fptrs *f)
+{
+    struct stat st;
+    size_t len;
+    char *buf;
+    int rv;
+
+    len = strlen(p1) + strlen(p2) + 2;
+    buf = (char *)_find_file_case_malloc(len);
+    snprintf(buf, len, "%s/%s", p1, p2);
+
+    rv = f->lstat(buf, &st);
+    free(buf);
+
+    return rv;
+}
+
+
+static char *_find_file_case_readdir(const char *dir, char *token, struct match_fptrs *f)
+{
+    static struct dirent *d;
     DIR *dirp;
-    struct dirent *d;
-    char *p, *prev, *last, *token, *end;
-    const char *dir;
+    char *match = NULL;
     int errsav;
+
+    if ((dirp = f->opendir(dir)) == NULL) {
+        return NULL;
+    }
+
+    errno = 0;
+
+    while ((d = f->readdir(dirp)) != NULL) {
+        if (f->strcasecmp(d->d_name, token) == 0) {
+            match = d->d_name;
+            break;
+        }
+    }
+
+    if (!d) {
+        errsav = errno;
+        f->closedir(dirp);
+        errno = errsav;
+        return NULL;
+    }
+
+    f->closedir(dirp);
+
+    return match;
+}
+
+
+static char *_find_file_case_iterate_path(char *pbuf, size_t buflen, size_t path_len, int flags, struct match_fptrs *f)
+{
+    char *p, *prev, *last, *token;
+    const char *dir;
 
     /* initial path is either root or current working directory */
     dir = (*pbuf == '/') ? "/" : ".";
-    prev = last = pbuf;
+
+    /* set pointers initially to begin of path */
+    prev = last = p = pbuf;
 
     /* iterate through path */
-    for (p=pbuf; ; dir=pbuf, last=token, p=NULL) {
-        if ((token = strtok(p, "/")) == NULL) {
-            break;
+    for ( ; (token = strtok(p, "/")) != NULL; dir=pbuf, last=token, p=NULL) {
+        char *match = NULL;
+
+        /* iterate the directory if path doesn't exist */
+        if (_find_file_case_path_exists(dir, token, f) == -1) {
+            match = _find_file_case_readdir(dir, token, f);
         }
 
-        /* search directory */
-
-        if ((dirp = f->opendir(dir)) == NULL) {
-            return NULL;
-        }
-
-        errno = 0;
-
-        while ((d = f->readdir(dirp)) != NULL) {
-            if (f->strcasecmp(d->d_name, token) == 0) {
-                break;
-            }
-        }
-
-        if (!d) {
-            errsav = errno;
-            f->closedir(dirp);
-            errno = errsav;
-
-            return NULL;
-        }
-
-        f->closedir(dirp);
-
-        /* append match */
-
+        /* restore delimiters */
         for ( ; prev != token; prev++) {
             if (*prev == 0) {
                 *prev = '/';
             }
         }
 
-        *token = 0;
-        strlcat(pbuf, d->d_name, buflen);
+        /* append match */
+        if (match) {
+            *token = 0;
+            strlcat(pbuf, match, buflen);
+        }
     }
 
-    /* append trailing delimiters */
+    if (!(flags & FIND_FILE_CASE_CLEANUP)) {
+        /* append trailing delimiters */
+        char *end = pbuf + path_len;
+        last += strlen(last);
 
-    end = pbuf + path_len;
-    last += strlen(last);
-
-    if (end > last) {
-        memset(last, '/', end - last);
-        *(end+1) = 0;
+        if (end > last) {
+            memset(last, '/', end - last);
+            *(end+1) = 0;
+        }
     }
 
     return pbuf;
@@ -190,7 +248,7 @@ static void _find_file_case_path_cleanup(char *pbuf, size_t buflen)
 {
     char *temp, *p, *token;
 
-    temp = (char *)malloc(buflen);
+    temp = (char *)_find_file_case_malloc(buflen);
     temp[0] = 0;
 
     for (p = pbuf; ; p = NULL) {
@@ -198,10 +256,12 @@ static void _find_file_case_path_cleanup(char *pbuf, size_t buflen)
             break;
         }
 
+        /* skip "." entries */
         if (strcmp(token, ".") == 0) {
             continue;
         }
 
+        /* path delimiter or root directory */
         if (*temp != 0 || (*temp == 0 && *pbuf == '/')) {
             strlcat(temp, "/", buflen);
         }
@@ -240,13 +300,9 @@ static char *_find_file_case_error(const char *path, char *buffer, char *copy, s
         if (buffer) {
             strlcpy(buffer, path, buflen);
             return buffer;
-        } else if ((copy = strdup(path)) == NULL) {
-            /* abort() instead of returning NULL */
-            perror("strdup()");
-            abort();
         }
 
-        return copy;
+        return _find_file_case_strdup(path);
     }
 
     return NULL;
@@ -293,12 +349,12 @@ char *find_file_case(const char *path, char *buffer, size_t buflen, int flags, s
         pbuf = (char *)memcpy(buffer, path, path_len + 1);
     } else {
         buflen = path_len + 1;
-        pbuf = copy = strdup(path);
+        pbuf = copy = _find_file_case_strdup(path);
     }
 
     /* if given path does not exist do case insensitive search */
     if (f.lstat(pbuf, &st) == -1 &&
-        (pbuf = _find_file_case_iterate_path(pbuf, buflen, path_len, &f)) == NULL)
+        (pbuf = _find_file_case_iterate_path(pbuf, buflen, path_len, flags, &f)) == NULL)
     {
         return _find_file_case_error(path, buffer, copy, buflen, flags);
     }
