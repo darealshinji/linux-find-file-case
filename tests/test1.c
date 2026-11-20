@@ -22,6 +22,11 @@ static int my_utf8_casecmp(const char *str1, const char *str2)
 
     int rv = g_utf8_collate(fold1, fold2);
 
+    /* case-insensitive identical, check original strings */
+    if (rv == 0) {
+        rv = g_utf8_collate(str1, str2);
+    }
+
     g_free(fold1);
     g_free(fold2);
 
